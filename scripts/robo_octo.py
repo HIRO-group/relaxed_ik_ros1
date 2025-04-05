@@ -14,7 +14,6 @@ from jsk_rviz_plugins.msg import OverlayText
 from std_msgs.msg import Int8MultiArray, Float64MultiArray,  Float32MultiArray, String, Int32, Bool
 from franka_msgs.msg import FrankaState
 from scipy.spatial.transform import Rotation as R
-# from pyquaternion import Quaternion
 import hiro_grasp
 from klampt.math import so3
 import math
@@ -47,8 +46,8 @@ class GraspLoop:
                  cone_radius=0.25, cone_height=0.25):
         # self.grasp_list = []
         self.load_file = "/home/caleb/robochem_steps/transfer_wo_jig.txt"
-        self.octo_file = "/home/caleb/robochem_steps/fixed_octo_action.txt"
-        # self.octo_file = "/home/caleb/robochem_steps/octo_action.txt"
+        # self.octo_file = "/home/caleb/robochem_steps/fixed_octo_action.txt"
+        self.octo_file = "/home/caleb/robochem_steps/octo_action.txt"
 
         self.read_file()
         
@@ -197,10 +196,13 @@ class GraspLoop:
             result_array = np.array(float_values[:7])
             
         return result_array
+    
     def read_octo_file(self):
         with open(self.octo_file, 'r') as f:
-            line = f.readline().strip()  # e.g., "[ 0.00175201  0.00583863 -0.02097218  0.30789703 -0.0245871  -0.01315031 1.0180444 ]"
-        
+            line = f.readline()  # e.g., "[ 0.00175201  0.00583863 -0.02097218  0.30789703 -0.0245871  -0.01315031 1.0180444 ]"
+            if not line:
+                return [0, 0, 0, 0, 0, 0, 0]
+            line = line.strip()
             # Remove the leading '[' and trailing ']'
             line = line.strip("[]")
             
@@ -352,6 +354,11 @@ class XboxInput:
         self.final_location = False
         self.grasp_loop = None
         self.made_loop = False
+        self.octo_pos_stride = 0.02
+        self.octo_rot_stride = 0.02
+
+        self.xbox_pos_stride = 0.001
+        self.xbox_rot_stride = 0.005
 
         self.ee_pose_goals_pub = rospy.Publisher('relaxed_ik/ee_pose_goals', EEPoseGoals, queue_size=1)
         self.ee_vel_goals_pub = rospy.Publisher('relaxed_ik/ee_vel_goals', EEVelGoals, queue_size=1)
@@ -362,11 +369,11 @@ class XboxInput:
         self.joint_angle_solutions_pub = rospy.Publisher('/relaxed_ik/reset', JointState, queue_size=1)
         
         if self.flag == "xbox":
-            self.pos_stride = 0.002
-            self.rot_stride = 0.010 
+            self.pos_stride = self.xbox_pos_stride
+            self.rot_stride = self.xbox_rot_stride
         if self.flag == "octo" or self.flag == "octolist":
-            self.pos_stride = 0.0001
-            self.rot_stride = 0.0001
+            self.pos_stride = self.octo_pos_stride
+            self.rot_stride = self.octo_rot_stride
             
             # 03_25_25 - old steps not really moving
             # self.pos_stride = 0.0001
@@ -452,6 +459,10 @@ class XboxInput:
         self.time_until_next = "00:00:00"
         self.robot_mode = "xbox"
         self.franka_joint_states = None
+        self.octo_grasp_count = 0
+        self.octo_grasp_open_count = 0
+        self.octo_grasp_lim = 20
+        
         
         # Add subscriber for timer updates
         rospy.Subscriber("/gui_msg", GUIMsg, self.gui_msg_callback)
@@ -477,14 +488,23 @@ class XboxInput:
         self.impedance_change_bool_pub.publish(True)
 
     def joy_cb(self, data):
+        if self.flag == "xbox":
+            self.pos_stride = self.xbox_pos_stride
+            self.rot_stride = self.xbox_rot_stride
+        if self.flag == "octo" or self.flag == "octolist":
+            # self.pos_stride = 0.03
+            # self.rot_stride = 0.01
+            self.pos_stride = self.octo_pos_stride
+            self.rot_stride = self.octo_rot_stride
         self.joy_data = data
+        print("joy cb", flag)
 
         # Second statement with axes makes it so the left trigger must be depressed to move the robot
         if self.flag == "xbox":
             if abs(self.joy_data.axes[1]) > 0.2:
                 self.linear[0] -= self.pos_stride * self.joy_data.axes[1]
             if abs(self.joy_data.axes[0]) > 0.2:
-                self.linear[1] += self.pos_stride * self.joy_data.axes[0]
+                self.linear[1] -= self.pos_stride * self.joy_data.axes[0]
             if abs(self.joy_data.axes[4]) > 0.2:
                 self.linear[2] += self.pos_stride * self.joy_data.axes[4]
 
@@ -498,19 +518,41 @@ class XboxInput:
             if abs(self.joy_data.buttons[5]) > 0.2:
                 self.angular[2] -= self.rot_stride
 
-        if self.flag == "octo":
+        if self.flag == "octo" and self.grasp_loop:
             axes_delta = self.grasp_loop.read_octo_file()
             # the first three values are x, y, z, then roll, pitch, and yaw. Disregard the last value also multiply each by a stride
-            self.linear[0] = axes_delta[0] * self.pos_stride
-            self.linear[1] = axes_delta[1] * self.pos_stride
-            self.linear[2] = axes_delta[2] * self.pos_stride
-            self.angular[0] = axes_delta[3] * self.rot_stride
-            self.angular[1] = axes_delta[4] * self.rot_stride
-            self.angular[2] = axes_delta[5] * self.rot_stride
+            self.linear[0]  += axes_delta[0] * self.pos_stride
+            self.linear[1]  += axes_delta[1] * self.pos_stride
+            self.linear[2]  += axes_delta[2] * self.pos_stride
+            self.angular[0] += axes_delta[3] * self.rot_stride
+            self.angular[1] += axes_delta[4] * self.rot_stride
+            self.angular[2] += axes_delta[5] * self.rot_stride
+            print(f"LINEAR: {self.linear}")
+            print(f"ANGULAR: {self.angular}")
+            print("grasp flag", axes_delta[6])
+            if axes_delta[6] > 0.5:
+                self.octo_grasp_count += 1
+                self.octo_grasp_open_count = 0
+                if self.octo_grasp_count >= self.octo_grasp_lim and self.grip_cur != 0.1:
+                    self.octo_grasp_count = 0
+                    self.grip_cur = 0.1
+                    # self.move_gripper() 
+
+            else:
+                self.octo_grasp_open_count += 1
+                self.octo_grasp_count = 0
+                if self.octo_grasp_open_count >= self.octo_grasp_lim and self.grip_cur != 0.01:
+                    self.octo_grasp_open_count = 0
+                    self.grip_cur = 0.01
+                    # self.move_gripper() 
+            # if (time.time() - self.last_grasp_time) >= 2.0:
+            #     self.last_grasp_time = time.time()
             
 
         a = data.buttons[0]
         b = data.buttons[1]
+        print(f"BUTTON A: {a}")
+        print(f"BUTTON B: {b}")
         x = data.buttons[2] 
         y = data.buttons[3]
         # rt_trigger = data.axes[5]
@@ -535,7 +577,7 @@ class XboxInput:
         if not r_stick: self.r_stick_check = 0
 
         if start_button:
-            self.flag = "list"
+            self.flag = "octo"
             self.made_loop = False
             self.og_set = False
             self.grasp_pose = self.franka_pose
@@ -937,11 +979,11 @@ class XboxInput:
         # elif self.eulers[2] < -0.5: self.angular[2] = 0
 
     def clamp_linear_position(self):
-        z_max = 1.0
-        z_min = 0.0
-        y_max = 1
-        y_min = -1
-        x_max = 1
+        z_max = 0.8
+        z_min = 0.02
+        y_max = 0.9
+        y_min = -0.9
+        x_max = 1.0
         x_min = 0.0
         # print(self.eulers)
 
@@ -1011,6 +1053,7 @@ class XboxInput:
             self.grasp_loop.check_next_state(self.error_state)
 
     def move_octo(self):
+        # print("MOVING OCTO")
         msg = EEVelGoals()
         if not self.og_set:
             self.og_set = True

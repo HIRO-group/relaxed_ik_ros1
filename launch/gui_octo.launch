@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="robot_ip" default="192.168.0.100" />
+    <arg name="flag" default="octo" />
+    <arg name="launch_rviz" default="true"/>
+    
+    <include file="$(find franka_example_controllers)/launch/hiro_joint_impedance_example_controller.launch" pass_all_args="true"/>
+    
+    <node pkg="relaxed_ik_ros1" type="update_rust_goal_start.py" name="update_rust_config" output="screen">
+        <param name="flag" value="$(arg flag)" />
+    </node>
+    
+    <node pkg="relaxed_ik_ros1" type="robo_octo.py" name="xbox_input" output="screen">
+        <param name="flag" value="$(arg flag)" />
+    </node>
+    
+    <node pkg="relaxed_ik_ros1" type="octo_viz.py" name="octo_viz" output="screen"/>
+    
+    <node pkg="joy" type="joy_node" name="joy" output="screen">
+        <param name="autorepeat_rate" value="100"/>
+    </node>
+
+    <include file="$(find timed_roslaunch)/launch/timed_roslaunch.launch">
+        <arg name="time" value="1" />
+        <arg name="pkg" value="relaxed_ik_ros1" />
+        <arg name="file" value="demo.launch" />
+        <arg name="node_name" value="timed_roslaunch" />
+      </include>
+</launch>
